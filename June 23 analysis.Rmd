@@ -1,0 +1,322 @@
+---
+title: "June Cit Sci data analysis"
+author: "Ben Holt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warnings=FALSE)
+
+```
+
+## June 2023 Citizen Science Research 
+
+During this survey period our teams in Falmouth and Plymouth conducted mini-biodiversity surveys for True Crabs and Wracks - 20 minute timed searches recorded whenever a species from these groups is present and assigning it an abundance category.
+
+We surveyed sites at varying distances away from a sewage pollution point and asked:
+
+1. Is species diversity correlated with distance from sewage pollution points?
+
+2. Is variation in species assemblage composition associated with distance from sewage pollution points?
+
+This was also the first time that we used an amended version of the biodiversity survey protocol, which set a low shore limit to the search area as well as the high shore limit. This low shore limit needed to be accessible during surveys and therefore all surveys were conducted at low tide during a spring tide period.
+
+### Loading in the data. There are three seperate data sources required for this analysis:
+
+* The biodiversity survey data (provide as two spreadsheets: "survey_details_jun23.csv" & "species_records_jun_23.csv")
+
+* The survey area data. GIS polygons for the survey areas - a SpatialPolygonsDataFrame called RPPsurveysiteGIS  (file = "RPPsurveysiteGIS")
+
+* The sewage pollution point location data. Provide by the River's Trust ("RT_dat_Cornwall_Ply.csv")
+
+
+```{r dataload}
+#Survey data
+species_records <- read.csv("species_records_jun_23.csv")
+#removed records listed as 'Unknown' or 'Unlisted' - these are all selfies of surveyors
+species_records <- subset(species_records, !grepl("Un", Scientific.name))
+
+survey_details <- read.csv("survey_details_jun23.csv")
+
+#Survey site GIS data
+library(rgdal) #GIS package
+load("RPPsurveysiteGIS")
+
+#Sewage pollution point data
+sewage_point_dat <- read.csv("RT_dat_Cornwall_Ply.csv")
+
+```
+
+### Checking out the survey sites and sewage pollution points
+
+Let's map out our study areas:
+
+#Falmouth
+
+```{r mapping1}
+#get names of Falmouth and Plymouth survey sites with data
+survey_sites <- names(table(survey_details$Site))
+
+#remove duplicated sewage points:
+sewage_point_dat <- subset(sewage_point_dat, !duplicated(siteNameEA))
+
+
+fal_sites <- survey_sites[c(2:4,7:10,12,13)]
+print(fal_sites)
+
+ply_sites <- survey_sites[!survey_sites %in% fal_sites]
+print(ply_sites)
+
+#subset the GIS data
+fal_site_GIS <- subset(RPPsurveysiteGIS, Name %in% fal_sites)
+ply_site_GIS <- subset(RPPsurveysiteGIS, Name %in% ply_sites)
+
+#make the survey site maps
+library(tmap)
+
+falmap1 <- tm_shape(fal_site_GIS) + 
+  tm_borders("dark red") +
+  tm_fill("yellow")
+
+plymap1 <- tm_shape(ply_site_GIS)+ 
+  tm_borders("dark red") +
+  tm_fill("yellow")
+
+tmap_options(check.and.fix = TRUE) #to fix broken polygons
+
+#add the sewage pollution point data
+## make spatial points dataframe
+
+sewage_Dat_GIS <- SpatialPointsDataFrame(sewage_point_dat[,c("Longitude","Latitude")], sewage_point_dat, proj4string = RPPsurveysiteGIS@proj4string)
+
+fal_map2 <- (falmap1) +
+  tm_shape(sewage_Dat_GIS) +
+  tm_symbols(col = "orange") +
+  tm_text("siteNameEA", just = "top")
+
+tmap_leaflet(fal_map2)
+
+
+ply_map2 <- (plymap1) +
+  tm_shape(sewage_Dat_GIS) +
+  tm_symbols(col = "orange") +
+  tm_text("siteNameEA", just = "top")
+
+tmap_leaflet(ply_map2)
+
+
+```
+
+### Species data
+
+Now lets have a quick look at the species data we have collected:
+
+```{r species_dat_summary}
+#Total number of surveys
+print(nrow(survey_details))
+
+#breakdown of survey type
+print(table(survey_details$Survey.type))
+
+##True Crab surveys
+#overall list of species discovered
+tc_surveys <- subset(survey_details, Survey.type == "BiodivTrueCrabs_low_shore_limited")
+
+tc_species_records <- subset(species_records, Survey.ID %in% tc_surveys$Survey.ID)
+
+tc_species <- sort(unique(tc_species_records$Scientific.name))
+
+#six species discovered - how common were they?
+
+tc_abund_cat <- unique(tc_species_records$Abundance)[c(3,1,2,4)] #rearranged in ascending order
+
+tc_abund_cat <- c("Absent", tc_abund_cat) # add absent category
+
+## create table function
+
+sp_abund_sum_tab <- function(surveys, species_records, abund_cats){
+
+blank_dat <- rep(NA,length(abund_cats))
+names(blank_dat) <- abund_cats
+
+res <- list()
+
+species <- sort(unique(species_records$Scientific.name))
+
+for (sp in species) {
+  
+  sp_abund_sum <- blank_dat
+  
+  for (abund_cat in abund_cats[-1]) {
+  
+    sp_abund_sum[abund_cat] <- nrow(subset(species_records, Scientific.name == sp & Abundance == abund_cat))
+    
+      
+  }
+  
+  sp_abund_sum["Absent"] <- nrow(surveys) - sum(sp_abund_sum, na.rm = T)
+  
+  res[[sp]] <- sp_abund_sum
+  
+}
+
+res <- do.call("rbind", res)
+res <- as.data.frame(res)
+
+return(res)  
+    
+}
+
+#overall
+all_tc_abund_sum <- sp_abund_sum_tab(tc_surveys, tc_species_records, tc_abund_cat)
+
+#just for Falmouth
+fal_tc_surv <- subset(tc_surveys, Site %in% fal_sites)
+fal_tc_species_rec <- subset(tc_species_records, Survey.ID %in% fal_tc_surv$Survey.ID)
+fal_tc_abund_sum <- sp_abund_sum_tab(fal_tc_surv, fal_tc_species_rec, tc_abund_cat)
+
+#just for Plymouth
+ply_tc_surv <- subset(tc_surveys, Site %in% ply_sites)
+ply_tc_species_rec <- subset(tc_species_records, Survey.ID %in% ply_tc_surv$Survey.ID)
+ply_tc_abund_sum <- sp_abund_sum_tab(ply_tc_surv, ply_tc_species_rec, tc_abund_cat)
+
+
+library(kableExtra)
+
+kable(all_tc_abund_sum, caption = "Abundance categories recorded for all True Crab surveys", "html")%>%
+  kable_styling(full_width = F)
+
+kable(fal_tc_abund_sum, caption = "Abundance categories recorded for Falmouth True Crab surveys", "html")%>%
+  kable_styling(full_width = F)
+
+kable(ply_tc_abund_sum, caption = "Abundance categories recorded for Plymouth True Crab surveys", "html")%>%
+  kable_styling(full_width = F)
+
+#Wracks
+#overall list of species discovered
+wr_surveys <- subset(survey_details, Survey.type == "BiodivWracks_low_shore_limited")
+
+wr_species_records <- subset(species_records, Survey.ID %in% wr_surveys$Survey.ID)
+
+wr_species <- sort(unique(wr_species_records$Scientific.name))
+
+#nine species discovered - how common were they?
+
+wr_abund_cat <- unique(wr_species_records$Abundance)[c(3,2,4,1,5,6)] #rearranged in ascending order
+
+wr_abund_cat <- c("Absent", wr_abund_cat) # add absent category
+
+#overall
+all_wr_abund_sum <- sp_abund_sum_tab(wr_surveys, wr_species_records, wr_abund_cat)
+
+#just for Falmouth
+fal_wr_surv <- subset(wr_surveys, Site %in% fal_sites)
+fal_wr_species_rec <- subset(wr_species_records, Survey.ID %in% fal_wr_surv$Survey.ID)
+fal_wr_abund_sum <- sp_abund_sum_tab(fal_wr_surv, fal_wr_species_rec, wr_abund_cat)
+
+#just for Plymouth
+ply_wr_surv <- subset(wr_surveys, Site %in% ply_sites)
+ply_wr_species_rec <- subset(wr_species_records, Survey.ID %in% ply_wr_surv$Survey.ID)
+ply_wr_abund_sum <- sp_abund_sum_tab(ply_wr_surv, ply_wr_species_rec, wr_abund_cat)
+
+library(kableExtra)
+
+kable(all_tc_abund_sum, caption = "Abundance categories recorded for all True Crab surveys", "html")%>%
+  kable_styling(full_width = F)
+
+kable(fal_tc_abund_sum, caption = "Abundance categories recorded for Falmouth True Crab surveys", "html")%>%
+  kable_styling(full_width = F)
+
+kable(ply_tc_abund_sum, caption = "Abundance categories recorded for Plymouth True Crab surveys", "html")%>%
+  kable_styling(full_width = F)
+
+
+```
+
+# calculating distances between survey sites and sewage pollution points
+
+Before we can beginning looking at our research questions, we need to calculate the distances between our survey sites and sewage pollution points. Ideally this should be calculated as 'distance by sea' rather than 'as the crow flies' but, looking at the maps, these distances might be similar and, since calcualting distance by sea would be rather complicated, we'll leave that for now. 
+
+In Falmouth, there is a sewage pollution point to the east of our survey sites, around the peninsula called Pendennis Point. The water dynamics in the area may mean that this point is not relevant our our survey sites and, for the sake of this analysis, we will ignore this point and focus solely on the Quenn Mary Gardens Pumping Station. N.B. I have not looked at the hydrology for the area and we may want to look again at this in the future.
+
+In Plymouth, our main sewage pollution point of interest is the Eastern Kings Pumping Station near Devil's Point. However, there are a number of other sewage outlets close to our survey sites. For this analysis I will not exclude any of Plymouth sewage points and calculate the distance from the centre of each survey area to it's nearest sewage point.
+
+```{r sewage_dist}
+#coordinates of surveys sites
+## Falmouth
+fal_co <- coordinates(fal_site_GIS)
+colnames(fal_co) <- c("X","Y")
+rownames(fal_co) <- fal_site_GIS@data$Name
+
+### Add Falmouth Sewage Point
+fal_sew_co <- subset(sewage_point_dat, siteNameEA == "QUEEN MARY GARDENS PUMPING STATION")[,c("Longitude","Latitude")]
+colnames(fal_sew_co) <- colnames(fal_co)
+fal_co <- rbind(fal_co, fal_sew_co)
+rownames(fal_co)[-(1:length(fal_site_GIS))] <- subset(sewage_point_dat, siteNameEA == "QUEEN MARY GARDENS PUMPING STATION")$siteNameEA
+
+### all distances
+fal_dist <- spDists(as.matrix(fal_co), longlat = T)
+diag(fal_dist) <- NA
+colnames(fal_dist) <- rownames(fal_co)
+rownames(fal_dist) <- rownames(fal_co)
+
+fal_dist_to_sew <- fal_dist[,"QUEEN MARY GARDENS PUMPING STATION"]
+
+#add to GIS data
+fal_site_GIS@data$dist_to_sew <- fal_dist_to_sew[fal_site_GIS@data$Name]
+
+#plot
+falmap3 <- tm_shape(fal_site_GIS) + 
+  tm_borders("black") +
+  tm_fill("dist_to_sew", palette = "RdYlGn", title = "Distance to sewage point (km)") +
+  tm_shape(sewage_Dat_GIS) +
+  tm_symbols(col = "orange") +
+  tm_text("siteNameEA", just = "top")
+
+tmap_leaflet(falmap3)
+
+#coordinates of surveys sites
+## Plymouth
+ply_co <- coordinates(ply_site_GIS)
+colnames(ply_co) <- c("X","Y")
+rownames(ply_co) <- ply_site_GIS@data$Name
+
+### Add plymouth Sewage Point
+
+ply_sew_co <- subset(sewage_point_dat, localAuthority == "Plymouth")[,c("Longitude","Latitude")]
+colnames(ply_sew_co) <- colnames(ply_co)
+ply_co <- rbind(ply_co, ply_sew_co)
+
+rownames(ply_co)[-(1:length(ply_site_GIS))] <- subset(sewage_point_dat, localAuthority == "Plymouth")$siteNameEA
+
+### all distances
+ply_dist <- spDists(as.matrix(ply_co), longlat = T)
+diag(ply_dist) <- NA
+colnames(ply_dist) <- rownames(ply_co)
+rownames(ply_dist) <- rownames(ply_co)
+
+#make matrix of distances to sewage points
+
+sew_dist_mat <- ply_dist[subset(sewage_point_dat, localAuthority == "Plymouth")$siteNameEA, ply_site_GIS@data$Name ]
+
+#nearest point
+sew_dist_min <- apply(sew_dist_mat, 2, min)
+
+
+#add to GIS data
+ply_site_GIS@data$dist_to_sew <- sew_dist_min[ply_site_GIS@data$Name]
+
+#plot
+plymap3 <- tm_shape(ply_site_GIS) + 
+  tm_borders("black") +
+  tm_fill("dist_to_sew", palette = "RdYlGn", title = "Distance to sewage point (km)") +
+  tm_shape(sewage_Dat_GIS) +
+  tm_symbols(col = "orange") +
+  tm_text("siteNameEA", just = "top")
+
+tmap_leaflet(plymap3)
+
+
+
+```
